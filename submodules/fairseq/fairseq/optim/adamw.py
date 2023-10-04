@@ -170,7 +170,6 @@ class AdamW(Optimizer):
                         # Maintains max of all exp. moving avg. of sq. grad. values
                         state['max_exp_avg_sq'] = torch.zeros_like(p)
 
-                state['weight_norm'] = tensor_norm(p, 'channel').detach()
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 if amsgrad:
                     max_exp_avg_sq = state['max_exp_avg_sq']
@@ -196,15 +195,3 @@ class AdamW(Optimizer):
                 p.addcdiv_(exp_avg, denom, value=-step_size)
 
         return loss
-    
-
-def tensor_norm(tensor, scale_invariance):
-    if scale_invariance == 'tensor':
-        return torch.linalg.vector_norm(tensor)
-    elif scale_invariance == 'channel':
-        # This assumes weights are stored as K x other dims
-        # Which is the default for both Linear and Conv2d
-        norm = torch.linalg.vector_norm(tensor.view(tensor.shape[0], -1), dim=1)
-        return norm.view(-1, *([1]*(tensor.dim()-1)))
-    else:
-        raise ValueError(f"Invalid {scale_invariance=}")

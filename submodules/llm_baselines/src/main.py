@@ -7,6 +7,7 @@ import json
 import copy
 import argparse
 import random
+import yaml
 import wandb
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import distributed
 
 from shared.optimizers import optimizer_factories
 from shared.utils.utils import call_valid_kwargs
+from shared.utils.logger import DynamicsLogger
 
 def get_args():
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -98,6 +100,7 @@ def main(args):
         g["params"] = params
         optimized_params_cnt += sum([p.numel() for p in g["params"]])
     print("number of optimized parameters: %.2fM" % (optimized_params_cnt/1e6,))
+    print("model structre:", model)
 
     if args.opt.lower() in optimizer_factories:
         opt_kwargs = args.opt_kwargs
@@ -121,6 +124,14 @@ def main(args):
         opt_kwargs.update(args.opt_kwargs)
         opt_kwargs['lr'] = args.lr
         opt = torch.optim.SGD(group_specs, **args.opt_kwargs)
+
+    # DynamicsLogger
+    if args.dynamics_logger_cfg:
+        with open(args.dynamics_logger_cfg, 'r') as f:
+            dlcfg = yaml.safe_load(f)
+
+        # Hooks into optimizer
+        dlogger = DynamicsLogger(model, opt, dlcfg, args.logger_output_dir)
 
     if args.scheduler != 'none':
         if args.scheduler in ['cos', 'linear']:

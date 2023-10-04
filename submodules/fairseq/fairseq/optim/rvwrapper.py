@@ -7,26 +7,19 @@ someday
 import math
 import torch
 from torch.optim.optimizer import Optimizer
-import torch.nn.functional as F
 from . import LegacyFairseqOptimizer, register_optimizer
 from shared.modules.factories import get_function_dict
 from fairseq.dataclass import FairseqDataclass
 from fairseq.optim import FairseqOptimizer, register_optimizer
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
 from omegaconf import II, OmegaConf
-from shared.optimizers.rotational_adamw import RotationalAdamW
-
+from shared.optimizers.rotational_wrapper import RotationalWrapper
+import json
 
 
 @dataclass
-class FairseqRotationalAdamWConfig(FairseqDataclass):
-    adam_betas: Any = field(
-        default=(0.9, 0.999), metadata={"help": "betas for Adam optimizer"}
-    )
-    adam_eps: float = field(
-        default=1e-8, metadata={"help": "epsilon for Adam optimizer"}
-    )
+class FairseqRVWrapperConfig(FairseqDataclass):
     weight_decay: float = field(default=0.0, metadata={"help": "weight decay"})
     use_old_adam: bool = field(
         default=False, metadata={"help": "Use fairseq.optim.adam.Adam"}
@@ -36,10 +29,21 @@ class FairseqRotationalAdamWConfig(FairseqDataclass):
         metadata={"help": "Custom functions used for the optimizer computation"}
     )
     lr: List[float] = II("optimization.lr")
+    wrapper_inner_type: Optional[str] = field(
+        default="adam",
+        metadata={"help": "Inner optimizer for gradient direction"}
+    )
+    wrapper_etar_func: Optional[str] = field(
+        default="adamw",
+        metadata={"help": "Outer optimizer for update size"}
+    )
+    wrapper_hyper_parameters: str = field(
+        default="{}",
+        metadata={"help": "Additional hyper-parameter"}
+    )
 
-
-@register_optimizer("rvadamw", dataclass=FairseqRotationalAdamWConfig)
-class FairseqrotationalAdamW(FairseqOptimizer):
+@register_optimizer("rvwrapper", dataclass=FairseqRVWrapperConfig)
+class FairseqRVWrapper(FairseqOptimizer):
     r"""Implements AdamW algorithm.
 
     The original Adam algorithm was proposed in `Adam: A Method for Stochastic Optimization`_.
@@ -66,9 +70,17 @@ class FairseqrotationalAdamW(FairseqOptimizer):
         https://openreview.net/forum?id=ryQu7f-RZ
     """
 
-    def __init__(self, cfg: FairseqRotationalAdamWConfig, params):
+    def __init__(self, cfg: FairseqRVWrapperConfig, params):
         super().__init__(cfg)
-        self._optimizer = FairseqRotationalAdamW(params, **self.optimizer_config)
+        defaults = dict(
+            update_norm_decay_factor=0.99,
+            per_feature=True,
+            zero_mean=True,
+            rotational_eps=1e-8,
+            zero_mean_on_init=True,
+            **self.optimizer_config,
+        )
+        self._optimizer = FairseqInnerRVWrapper(params, **defaults)
 
     @property
     def optimizer_config(self):
@@ -80,20 +92,19 @@ class FairseqrotationalAdamW(FairseqOptimizer):
         """
         return {
             "lr": self.cfg.lr[0],
-            "betas": eval(self.cfg.adam_betas)
-            if isinstance(self.cfg.adam_betas, str)
-            else OmegaConf.to_container(self.cfg.adam_betas),
-            "eps": self.cfg.adam_eps,
             "weight_decay": self.cfg.weight_decay,
+            "inner_type": self.cfg.wrapper_inner_type,
+            "etar_func": self.cfg.wrapper_etar_func,
+            **json.loads(self.cfg.wrapper_hyper_parameters)
         }
-
-class FairseqRotationalAdamW(Optimizer):
+    
+class FairseqInnerRVWrapper(Optimizer):
     def __init__(
         self,
         params,
         **defaults
     ):
-        self._optimizer = RotationalAdamW(params, **defaults)
+        self._optimizer = RotationalWrapper(params, **defaults)
         super().__init__(params, defaults)
 
     @torch.no_grad()

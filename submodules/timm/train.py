@@ -24,15 +24,13 @@ from datetime import datetime
 from functools import partial
 import pandas as  pd
 import numpy as np
-import random
-import pickle
 
 import torch
 import torch.nn as nn
 import torchvision.utils
 import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
-import torch.nn.functional as F
+from shared.utils.logger import DynamicsLogger
 
 from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
@@ -93,6 +91,8 @@ parser.add_argument('--data-dir', metavar='DIR',
                     help='path to dataset (root dir)')
 parser.add_argument('--dataset', metavar='NAME', default='',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
+parser.add_argument('--dataset-is-random', action='store_true', default=False,
+                   help='Generate Random Data')
 group.add_argument('--train-split', metavar='NAME', default='train',
                    help='dataset train split (default: train)')
 group.add_argument('--val-split', metavar='NAME', default='validation',
@@ -134,7 +134,7 @@ group.add_argument('--std', type=float, nargs='+', default=None, metavar='STD',
 group.add_argument('--interpolation', default='', type=str, metavar='NAME',
                    help='Image resize interpolation type (overrides model)')
 group.add_argument('-b', '--batch-size', type=int, default=128, metavar='N',
-                   help='Accelerator batch size for training (default: 128)')
+                   help='Input batch size for training (default: 128)')
 group.add_argument('--local-accumulation', type=int, default=1, metavar='N',
                    help='Accumulate gradients for N batches between updates')
 group.add_argument('-vb', '--validation-batch-size', type=int, default=None, metavar='N',
@@ -363,8 +363,8 @@ group.add_argument('--use-multi-epochs-loader', action='store_true', default=Fal
 group.add_argument('--log-wandb', action='store_true', default=False,
                    help='log training and validation metrics to wandb')
 group.add_argument('--wandb-kwargs', nargs='*', default={}, action=utils.ParseKwargs)
-group.add_argument('--log-wandb-extended', action='store_true', default=False,
-                   help='log additional artifacts to wandb')
+group.add_argument('--dynamics-logger-cfg', type=str, default=None, #default='../../shared/utils/base_logger_cfg.yaml', 
+                   help='YAML file path with a DynamicsLogger cfg (disabled if falsy)')
 
 
 def _parse_args():
@@ -507,7 +507,7 @@ def main():
         model = memory_efficient_fusion(model)
 
     if not args.lr:
-        global_batch_size = args.batch_size * args.world_size * args.local_accumulation
+        global_batch_size = args.batch_size * args.world_size
         batch_ratio = global_batch_size / args.lr_base_size
         if not args.lr_base_scale:
             on = args.opt.lower()
@@ -743,6 +743,14 @@ def main():
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
 
+        # DynamicsLogger
+        if utils.is_primary(args) and args.dynamics_logger_cfg:
+            with open(args.dynamics_logger_cfg, 'r') as f:
+                dlcfg = yaml.safe_load(f)
+
+            # Hooks into optimizer
+            dlogger = DynamicsLogger(model, optimizer, dlcfg, output_dir)
+
     if utils.is_primary(args) and args.log_wandb:
         if has_wandb:
             wandb.init(config=args, **{'project': args.experiment, **args.wandb_kwargs})
@@ -825,7 +833,7 @@ def main():
                 )
                 eval_metrics = ema_eval_metrics
 
-            if output_dir is not None:
+            if utils.is_primary(args) and output_dir is not None:
                 lrs = [param_group['lr'] for param_group in optimizer.param_groups]
                 utils.update_summary(
                     epoch,
@@ -848,7 +856,6 @@ def main():
 
             if train_metrics['loss'] != train_metrics['loss']:
                 raise ValueError("NaN loss encountered")
-
 
     except KeyboardInterrupt:
         pass
@@ -891,17 +898,11 @@ def train_one_epoch(
     last_idx = num_batches_per_epoch - 1
     num_updates = epoch * num_batches_per_epoch
 
-    if args.log_wandb_extended:
-        params = named_model_parameters(model, optimizer)
-    average_angles = {}
-    average_grad_norm = {}
-    average_relative_radial = {}
-
     accumulated = 0
     optimizer.zero_grad()
     for batch_idx, (input, target) in enumerate(loader):
-        if args.log_wandb_extended:
-            W_t_1, _ = parameter_weights(params)
+        if args.dataset_is_random:
+            input = torch.rand_like(input)
         last_batch = batch_idx == last_idx * local_accumulation
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
@@ -939,32 +940,7 @@ def train_one_epoch(
             if accumulated == local_accumulation:
                 optimizer.step()
 
-        if args.log_wandb_extended and accumulated == local_accumulation:
-            prior_count = batch_idx // local_accumulation
-            W_t, G_t = parameter_weights(params)
-            for name in W_t.keys():
-                average_relative_radial[f'average_relative_radial/{name}'] = ((
-                    prior_count * average_relative_radial.get(f'average_relative_radial/{name}', 0)
-                    + torch.sum(W_t_1[name][0] * G_t[name]) / torch.sum(W_t_1[name][0] ** 2)
-                ) / (prior_count + 1)).item()
-
-                average_grad_norm[f'average_grad_norm_t/{name}'] = ((
-                    prior_count * average_grad_norm.get(f'average_grad_norm_t/{name}', 0)
-                    + ((G_t[name] ** 2).sum()/G_t[name].shape[0]).sqrt()
-                ) / (prior_count + 1)).item()
-
-                average_angles[f'avg_angle_update/{name}'] = ((
-                    prior_count * average_angles.get(f'avg_angle_update/{name}', 0)
-                    + torch.acos(torch.clamp(
-                        F.cosine_similarity(
-                            W_t_1[name][0].reshape(-1).to(torch.float64),
-                            W_t[name][0].reshape(-1).to(torch.float64),
-                            dim=0
-                        ),
-                        -1.0, 1.0)
-                    ).item()
-                ) / (prior_count + 1))
-
+        if accumulated == local_accumulation:
             optimizer.zero_grad()
             accumulated = 0
             num_updates += 1
@@ -1018,44 +994,12 @@ def train_one_epoch(
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
 
         end = time.time()
-
-        if last_batch:
-            # Drop batch remainder when doing local accumulation
-            break
+        # end for
 
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
 
-    if not args.log_wandb_extended:
-        return OrderedDict([('loss', losses_m.avg)])
-    results = OrderedDict([('loss', losses_m.avg), ("epoch", epoch)])
-    results.update(average_angles)
-    results.update(average_grad_norm)
-    results.update(average_relative_radial)
-    return results
-
-def parameter_weights(model_params):
-    weights = {}
-    gradients = {}
-    for name, (param, idx) in model_params.items():
-        weights[name] = (param.detach().clone(), idx)
-        if param.grad is not None:
-            gradients[name] = param.grad.detach().clone()
-    return weights, gradients
-
-def named_model_parameters(model, optimizer):
-    model_params = dict()
-    param_name_mapping = dict()
-    for name, param in model.named_parameters():
-        param_name_mapping[id(param)] = name
-
-    idx = 0
-    for group in optimizer.param_groups:
-        for param in group['params']:
-            parameter_name = param_name_mapping[id(param)]
-            model_params[parameter_name] = (param, idx)
-            idx += 1
-    return model_params
+    return OrderedDict([('loss', losses_m.avg)])
 
 def validate(
         model,

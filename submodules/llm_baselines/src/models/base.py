@@ -132,7 +132,7 @@ class GPTBase(nn.Module):
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
 
-        self.lm_head = get_linear_factory(config.final_linear_cfg)(
+        self.lm_head = linear_factory(
             config.n_embd, config.vocab_size, bias=False
         )
         # with weight tying when using torch.compile() some warnings get generated:

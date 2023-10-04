@@ -50,11 +50,13 @@ class WSConv2d(nn.Conv2d):
             with torch.no_grad():
                 self.init_std.copy_(std.flatten())
             self.buffer_initialized = True
-            scale_factor = self.init_std.view(-1, 1, 1, 1) / std
-        else:
+        
+        if not self.keep_init:
             fan_in = weight.size(1) * weight.size(2) * weight.size(3)
             scale_factor = 1.0 / (std * math.sqrt(fan_in))
-
+        else:
+            scale_factor = self.init_std.view(-1, 1, 1, 1) / std
+            
         if self.gain is not None:
             scale_factor = scale_factor * self.gain.view(-1, 1, 1, 1)
         weight = scale_factor * weight  # Could also apply to outputs, note different memory impact
@@ -85,16 +87,27 @@ class WSLinear(torch.nn.Linear):
         if self.keep_init and not self.buffer_initialized:
             with torch.no_grad():
                 self.init_std.copy_(std.flatten())
-                self.buffer_initialized = True
             self.buffer_initialized = True
-            scale_factor = self.init_std.view(-1, 1) / std
-        else:
+        
+        if not self.keep_init:
             fan_in = weight.shape[1]
             scale_factor = 1.0 / (std * math.sqrt(fan_in))
+        else:
+            scale_factor = self.init_std.view(-1, 1) / std
 
         if self.gain is not None:
             scale_factor = scale_factor * self.gain.view(-1, 1)
         weight = scale_factor * weight  # Could also apply to outputs, note different memory impact
+        return torch.nn.functional.linear(x, weight, self.bias)
+    
+class SLinear(torch.nn.Linear):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
+        super().__init__(in_features, out_features, bias=bias, device=device, dtype=dtype)
+        self.gain = nn.Parameter(torch.ones(out_features, device=device, dtype=dtype))
+
+    def forward(self, x):
+        weight = self.weight
+        weight = self.gain.view(-1, 1) * weight  # Could also apply to outputs, note different memory impact
         return torch.nn.functional.linear(x, weight, self.bias)
 
 

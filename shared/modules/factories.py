@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn.parameter import Parameter, UninitializedParameter
 from torch.nn.modules.lazy import LazyModuleMixin
 import yaml
-from shared.modules.normalization import WSConv2d, WSLinear, TrackingNorm, TWSConv2d, TWSLinear
+from shared.modules.normalization import WSConv2d, WSLinear, TrackingNorm, TWSConv2d, TWSLinear, SLinear
 
 from shared.utils.utils import call_valid_kwargs
 
@@ -125,6 +125,7 @@ def get_linear_factory(desc):
         'wslinear': WSLinear,
         'twslinear': TWSLinear,
         'custom': CustomLinear,
+        'slinear': SLinear,
     }
     return get_module_factory(desc, factories)
 
