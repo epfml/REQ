@@ -1,10 +1,10 @@
-# Rotational Optimizers
+# Rotational Equilibrium
 This repository provides the implementation and experiment scripts for the paper [Rotational Equilibrium: How Weight Decay Balances Learning Across Neural Networks](https://arxiv.org/abs/2305.17212)
 
 ## Repository Structure
-* **[experiments](https://github.com/epfml/rotational-optimizers/tree/main/experiments)**: Scripts to run the experiments, as reported in the paper. The experiments are seperated into folder analogously to the experiment sections and paragraphs in the paper. We order them by (dataset, architecture, optimizer, special hyper-parameters).
-* **[shared/optimizers](https://github.com/epfml/rotational-optimizers/tree/main/shared/optimizers)**: Contains implementation of the rotational variant of the baseline optimizers (AdamW, SGD, Lion)
-* **[submodules](https://github.com/epfml/rotational-optimizers/tree/main/submodules)**: Contains the **FairSeq**, **LLM-Baselines** and **TIMM** libraries, that are used to run experiments with the baseline and rotationl variants of the optimizers.
+* **[experiments](https://github.com/epfml/REQ/tree/main/experiments)**: Scripts to run the experiments, as reported in the paper. The experiments are seperated into folder analogously to the experiment sections and paragraphs in the paper. We order them by (dataset, architecture, optimizer, special hyper-parameters).
+* **[shared/optimizers](https://github.com/epfml/REQ/tree/main/shared/optimizers)**: Contains implementation of the rotational variant of the baseline optimizers (AdamW, SGD, Lion)
+* **[submodules](https://github.com/epfml/REQ/tree/main/submodules)**: Contains the **FairSeq**, **LLM-Baselines** and **TIMM** libraries, that are used to run experiments with the baseline and rotationl variants of the optimizers.
 
 ## Experiments
 The scripts to run the experiments as reported in the paper are provided in experiments folder.
