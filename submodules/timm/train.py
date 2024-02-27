@@ -22,8 +22,6 @@ from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
 from functools import partial
-import pandas as  pd
-import numpy as np
 
 import torch
 import torch.nn as nn
@@ -452,14 +450,6 @@ def main():
     if args.grad_checkpointing:
         model.set_grad_checkpointing(enable=True)
 
-    if utils.is_primary(args):
-        _logger.info(
-            f'Model structure:\n {model}'
-        )
-        _logger.info(
-            f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}'
-        )
-
     data_config = resolve_data_config(vars(args), model=model, verbose=utils.is_primary(args))
 
     # setup augmentation batch splits for contrastive loss or split bn
@@ -754,10 +744,24 @@ def main():
     if utils.is_primary(args) and args.log_wandb:
         if has_wandb:
             wandb.init(config=args, **{'project': args.experiment, **args.wandb_kwargs})
+            wandb.define_metric("train*", step_metric="epoch")
+            wandb.define_metric("eval*", step_metric="epoch")
+            wandb.define_metric("lr", step_metric="epoch")
         else:
             _logger.warning(
                 "You've requested to log metrics to wandb but package not found. "
                 "Metrics not being logged to wandb, try `pip install wandb`")
+
+    if utils.is_primary(args):
+        _logger.info(
+            f'\nModel structure:\n{model}'
+        )
+        _logger.info(
+            f'\nModel {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}'
+        )
+        _logger.info(
+            f'\nOptimizer Info:\n{optimizer}'
+        )
 
     # setup learning rate schedule and starting epoch
     updates_per_epoch = len(loader_train) // args.local_accumulation
@@ -836,7 +840,8 @@ def main():
             if utils.is_primary(args) and output_dir is not None:
                 lrs = [param_group['lr'] for param_group in optimizer.param_groups]
                 utils.update_summary(
-                    epoch,
+                    (epoch+1)*updates_per_epoch,
+                    (epoch+1),
                     train_metrics,
                     eval_metrics,
                     filename=os.path.join(output_dir, 'summary.csv'),

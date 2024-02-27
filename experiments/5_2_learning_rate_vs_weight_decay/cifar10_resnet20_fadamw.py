@@ -9,7 +9,7 @@ shell_cmd = r"""PYTHONPATH=$PYTHONPATH:$base_dir torchrun --nproc_per_node 1 tra
     --model cifar_resnet --model-kwargs name="cifar_rn20"  \
     --train-split \"train[:0.9]-0\" --val-split \"train[0.9:]-0\"  \
     -b ${b} --opt fadamw --lr-base $lr --lr-base-size 128 --lr-base-scale linear --weight-decay $wd --sched cosine --sched-on-update --epochs 200 --warmup-lr 0 --min-lr 0 --warmup-epochs 5 --checkpoint-hist 1 \
-    --log-wandb --wandb-kwargs project=lr-wd-trade-off name="\"fadamw_b_${b}_iter_${iter}_lr${lr}_wd${wd}_seed${seed}\"" --seed $seed \
+    --log-wandb --wandb-kwargs project=lr-wd-trade-off-wrapper name="\"frozen_adamw_b_${b}_iter_${iter}_lr${lr}_wd${wd}_seed${seed}\"" --seed $seed \
     --dynamics-logger-cfg '../../shared/utils/base_logger_cfg.yaml' 
 """
 

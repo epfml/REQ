@@ -28,6 +28,7 @@ def get_outdir(path, *paths, inc=False):
 
 
 def update_summary(
+        iter,
         epoch,
         train_metrics,
         eval_metrics,
@@ -36,7 +37,7 @@ def update_summary(
         write_header=False,
         log_wandb=False,
 ):
-    rowd = OrderedDict(epoch=epoch)
+    rowd = OrderedDict(iter=iter, epoch=epoch)
     rowd.update([('train_' + k, v) for k, v in train_metrics.items()])
     rowd.update([('eval_' + k, v) for k, v in eval_metrics.items()])
     if lr is not None:

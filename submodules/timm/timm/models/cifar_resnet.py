@@ -520,7 +520,6 @@ def get_resnet(cfg, verbose=False):
 
         block_name = 'BasicBlock' if depth < 50 or dataset_type == 'cifar' else 'Bottleneck'
         expansion = 4 if block_name == 'Bottleneck' else 1
-
         model_cfg.update({
             'pre_activation': pre_activation,
             'block_name': block_name,

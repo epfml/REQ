@@ -14,6 +14,16 @@ class DynamicsLogger():
         self.iteration = 0
         self.output_folder = output_folder
 
+        self.interval = None  # Set in step
+
+        if isinstance(cfg['interval'], int):
+            self.interval = cfg['interval']
+        elif isinstance(cfg['interval'], (tuple, list)):
+            # Tuples of iter, interval with iter0 < iter1 < ...
+            # [(iter0, interval0), (iter1, interval1), (iter2, interval2)]
+            # At iterX change interval to intervalX
+            self.interval = cfg['interval'][0][1]
+
         # TODO: Add default cfg here once tested
         self.cfg = copy.deepcopy(cfg)
         if self.cfg['disk_stats'] == 'all':
@@ -27,6 +37,8 @@ class DynamicsLogger():
         self.optimizer.step = self.step
         self._step_count = IntegerHook(0, self.optimizer)
 
+        self.wandb_setup_complete = False
+
     def step(self, *args, **kwargs):
         # Dictionaries keyed by parameter name
         # NOTE: Some may be direct references to model / optimizer (do not change in-place)
@@ -36,11 +48,23 @@ class DynamicsLogger():
         post_params = dict()
         post_states = dict()
 
+        if isinstance(self.cfg['interval'], int):
+            self.interval = self.cfg['interval']
+        elif isinstance(self.cfg['interval'], (tuple, list)):
+            # Tuples of iter, interval with iter0 < iter1 < ...
+            # [(iter0, interval0), (iter1, interval1), (iter2, interval2)]
+            # At iterX change interval to intervalX
+            idx = 0
+            while idx < len(self.cfg['interval']) and self.cfg['interval'][idx][0] <= self.iteration:
+                idx += 1
+            self.interval = self.cfg['interval'][idx-1][1]
+
         if 'eps' in self.optimizer.defaults:
             eps = self.optimizer.defaults['eps']
         else:
             eps = 1e-8
-        if self.iteration % self.cfg['interval'] == 0:
+
+        if self.iteration % self.interval == 0:
             for name, param in self.model.named_parameters():
                 pre_params[name] = param.clone().detach()
                 if param.grad is not None:
@@ -66,8 +90,6 @@ class DynamicsLogger():
     @torch.no_grad()
     def log_statistics(self, pre_params, post_params, pre_grads, pre_states, post_states, eps):
         requested_stats = set(self.cfg['stats'])
-
-        # Update norm
 
         if {'layer_norm', 'neuron_norm'} & requested_stats:
             for name, param in pre_params.items():
@@ -249,11 +271,11 @@ class DynamicsLogger():
         T_wandb = self.cfg['wandb_interval'] or 0
 
         # Maybe log to disk
-        if T_disk and (self.iteration + self.cfg['interval']) % (T_disk * self.cfg['interval']) == 0:
+        if T_disk and (self.iteration + self.interval) % (T_disk * self.interval) == 0:
             self.log_to_disk()
 
         # Maybe log to wandb
-        if T_wandb and (self.iteration + self.cfg['interval']) % (T_wandb * self.cfg['interval']) == 0:
+        if T_wandb and (self.iteration + self.interval) % (T_wandb * self.interval) == 0:
             self.log_to_wandb()
 
     
@@ -349,9 +371,17 @@ class DynamicsLogger():
 
                 out_dict[f"{stat_name}/{param_name}"] = values
 
+        if not self.wandb_setup_complete:
+            # For whatever reason using globs at init doesn't work
+            wandb.define_metric("iter")
+            for stat in out_dict:
+                wandb.define_metric(stat, step_metric="iter")
+            self.wandb_setup_complete = True
+
+        out_dict['iter'] = self.iteration-(T_wandb-1)*self.interval
         wandb.log(
             data=out_dict,
-            step=self.iteration-(T_wandb-1)*self.cfg['interval']
+            # step=self.iteration-(T_wandb-1)*self.interval
         )
 
         if free_buffers:

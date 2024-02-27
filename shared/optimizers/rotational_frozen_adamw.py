@@ -11,27 +11,6 @@ import torch.nn.functional as F
 
 
 class BiasFrozenAdamW(Optimizer):
-    r"""Implements rotational version of AdamW algorithm.
-
-    The original Adam algorithm was proposed in `Adam: A Method for Stochastic Optimization`_.
-    The AdamW variant was proposed in `Decoupled Weight Decay Regularization`_.
-
-    Arguments:
-        params (iterable): iterable of parameters to optimize or dicts defining
-            parameter groups
-        lr (float, optional): learning rate (default: 1e-3)
-        betas (Tuple[float, float], optional): coefficients used for computing
-            running averages of gradient and its square (default: (0.9, 0.999))
-        eps (float, optional): term added to the denominator to improve
-            numerical stability (default: 1e-8)
-        weight_decay (float, optional): weight decay coefficient (default: 1e-2)
-
-    .. _Adam\: A Method for Stochastic Optimization:
-        https://arxiv.org/abs/1412.6980
-    .. _Decoupled Weight Decay Regularization:
-        https://arxiv.org/abs/1711.05101
-    """
-
     def __init__(
             self,
             params,
@@ -42,8 +21,7 @@ class BiasFrozenAdamW(Optimizer):
             scale_invariance='channel',
             scale_invariance_min_dim=2,
             zero_mean=True,
-            update_norm_decay_factor=0.99,
-            control_group_percentage=0.0,
+            update_norm_decay_factor=0.9,
             is_double=False,
             rotational=None):
         if not 0.0 <= lr:
@@ -64,13 +42,33 @@ class BiasFrozenAdamW(Optimizer):
             zero_mean=zero_mean,
             update_norm_decay_factor=update_norm_decay_factor,
             rotational=rotational,
-            control_group_percentage=control_group_percentage,
             is_double=is_double,
         )
         super().__init__(params, defaults)
 
+        if zero_mean:
+            self.center_rotational_weights()
+
     def __setstate__(self, state):
         super().__setstate__(state)
+
+    @torch.no_grad()
+    def center_rotational_weights(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                if group.get('rotational') is not None:
+                    rotational = group['rotational']
+                else:
+                    # By default matrices and higher order tensors are treated
+                    # as scale invariant if rotational is not explicitly set
+                    # and weight decay is applied to them
+                    rotational = group['weight_decay'] != 0 and p.dim() > 1
+
+                if rotational:
+                    init_norm = tensor_norm(p, group['scale_invariance'])
+                    p_zero = zero_mean(p, group['scale_invariance'])
+                    p_zero = init_norm * p_zero / tensor_norm(p_zero, group['scale_invariance'])
+                    p.copy_(p_zero)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -151,28 +149,28 @@ class BiasFrozenAdamW(Optimizer):
                     d_p = torch.div(exp_avg, denom) 
 
                     # Project here (could also do after scaling but should be similar overall)
-                    d_p = d_p - p * (dot_product(d_p, p, scale_invariance) / state['weight_norm']**2)
+                    d_p = d_p - p * (dot_product(d_p, p, scale_invariance) / state['weight_norm']**2)         
+
+                    if group['zero_mean']:
+                        d_p = zero_mean(d_p, scale_invariance)
+                    
+                    # Keep track of the average update norm (exponential moving root-mean-square)
                     d_p_norm2 = (tensor_norm(d_p, scale_invariance)**2).detach()
                     state['update_norm2'] = (1 - undf) * d_p_norm2 + undf * state.get('update_norm2',0)
 
+                    # Bias correction
                     avg_update_norm = torch.sqrt(state['update_norm2'] / (1 - undf**state['step']))
 
+                    # Get rotational rate
                     step_size = (2*group['lr']*weight_decay*(1-beta1)/(1+beta1))**0.5
 
-                    control_group_percentage = group['control_group_percentage']
-                    if group['control_group_percentage'] > 0.0:
-                        if not group['is_double']:
-                            control_group_size = int(control_group_percentage / 2 * d_p.shape[0])
-                            d_p[:control_group_size, ...] *= 0.01
-                            d_p[control_group_size:2*control_group_size, ...] *= 100
-                        else:
-                            control_group_size = int(control_group_percentage * d_p.shape[0])
-                            d_p[:control_group_size, ...] *= 0.01
-
+                    # Compute update
                     p_new = p - step_size * (d_p / (eps + avg_update_norm)) * state['weight_norm']
-                    if group['zero_mean']:
-                        p_new = zero_mean(p_new, scale_invariance)
+
+                    # Project back onto the sphere
                     p_new = p_new * state['weight_norm'] / tensor_norm(p_new, scale_invariance)
+                    
+                    # Write update
                     p.copy_(p_new)
         return loss
 
@@ -197,6 +195,7 @@ def dot_product(a, b, scale_invariance):
         return (a.flatten(1)*b.flatten(1)).sum(dim=1).reshape(a.shape[0], *([1]*(a.dim()-1)))
     else:
         raise ValueError(f"Invalid {scale_invariance=}")
+
 
 def zero_mean(tensor, scale_invariance):
     if scale_invariance == 'tensor':

@@ -277,8 +277,8 @@ def create_optimizer_v2(
         optimizer = call_valid_kwargs(optimizer_factories[opt_lower], opt_args, (parameters,))
 
     # basic SGD & related
-    elif opt_lower == 'sgd' or opt_lower == 'nesterov':
-        # NOTE 'sgd' refers to SGD + nesterov momentum for legacy / backwards compat reasons
+    elif opt_lower == 'nesterov':
+        # TIMM used 'sgd' to refer to nesterov, now disabled
         opt_args.pop('eps', None)
         optimizer = optim.SGD(parameters, momentum=momentum, nesterov=True, **opt_args)
     elif opt_lower == 'momentum':

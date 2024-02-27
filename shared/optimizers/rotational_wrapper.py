@@ -3,17 +3,18 @@ import torch
 from torch.optim import Optimizer
 from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype
 
+from shared.optimizers.common import dot_product, zero_mean, tensor_norm, center_rotational_weights
+
 class RotationalWrapper(Optimizer):
     def __init__(
         self,
         params,
         inner_type='adamw',
         etar_func=None,
-        update_norm_decay_factor=0.99,
-        per_feature=True,
+        update_norm_decay_factor=0.9,
+        per_neuron=True,
         zero_mean=True,
         rotational_eps=1e-8,
-        zero_mean_on_init=True,
         **inner_hyperparameters,
     ):
         # Allow choosing etar func via string
@@ -22,6 +23,8 @@ class RotationalWrapper(Optimizer):
                 self.etar_func = adamw_etar_func
             elif etar_func == 'sgdm':
                 self.etar_func = sgdm_etar_func
+            elif etar_func == 'lion':
+                self.etar_func = lion_etar_func
             else:
                 raise ValueError(f"Unknown {etar_func=}")
         else:
@@ -76,8 +79,24 @@ class RotationalWrapper(Optimizer):
                 **inner_hyperparameters,
             }
 
+        if inner_type == 'lion':
+            self.init_state_get_lists = lion_init_state_get_lists
+            self.get_inner_update = lion_get_update
+
+            if self.etar_func is None:
+                self.etar_func = lion_etar_func
+
+            # Set defaults based on official PyTorch implementation
+            inner_hyperparameters = {
+                'lr': 1e-4,
+                'weight_decay': 1.0,
+                'betas': (0.9, 0.99),
+                'eps': 1e-8,
+                **inner_hyperparameters,
+            }
+
         defaults = dict(
-            per_feature=per_feature,
+            per_neuron=per_neuron,
             update_norm_decay_factor=update_norm_decay_factor,
             zero_mean=zero_mean,
             rotational_eps=rotational_eps,
@@ -86,24 +105,8 @@ class RotationalWrapper(Optimizer):
         super().__init__(params, defaults)
 
         # Change initialization to be zero mean
-        if zero_mean and zero_mean_on_init:
-            self.center_rotational_weights()
-
-    @torch.no_grad()
-    def center_rotational_weights(self):
-        for group in self.param_groups:
-            for p in group['params']:
-                if group.get('rotational') is not None:
-                    rotational = group['rotational']
-                else:
-                    # By default matrices and higher order tensors are treated
-                    # as scale invariant if rotational is not explicitly set
-                    # and weight decay is applied to them
-                    rotational = group['weight_decay'] != 0 and p.dim() > 1
-
-                if rotational:
-                    p_zero = zero_mean(p, group['per_feature'])
-                    p.copy_(p_zero)
+        if zero_mean:
+            center_rotational_weights(self.param_groups)
 
     @torch.no_grad()
     def step(self):
@@ -129,19 +132,22 @@ class RotationalWrapper(Optimizer):
                     if 'norm' not in state:
                         # Save initial norm
                         if group['zero_mean']:
-                            p_zero = zero_mean(p, group['per_feature'])
-                            state['norm'] = tensor_norm(p_zero, group['per_feature'])
+                            p_zero = zero_mean(p, group['per_neuron'])
+                            state['norm'] = tensor_norm(p_zero, group['per_neuron'])
                         else:
-                            state['norm'] = tensor_norm(p, group['per_feature'])
+                            state['norm'] = tensor_norm(p, group['per_neuron'])
 
                     # Project update to be orthogonal to p
                     update = unscaled_delta_grads[p]
-                    projection = p * (dot_product(update, p, group['per_feature']) / state['norm']**2)
+                    projection = p * (dot_product(update, p, group['per_neuron']) / state['norm']**2)
                     update = update - projection
+
+                    if group['zero_mean']:
+                        update = zero_mean(update, group['per_neuron'])
 
                     # Keep track of the average update norm (exponential moving root-mean-square)
                     undf = group['update_norm_decay_factor']
-                    square_update_norm = tensor_norm(update, group['per_feature'])**2
+                    square_update_norm = tensor_norm(update, group['per_neuron'])**2
                     state['update_norm_sq'] = (1-undf) * square_update_norm + undf * state.get('update_norm_sq', 0)
 
                     # Bias correction
@@ -154,44 +160,13 @@ class RotationalWrapper(Optimizer):
                     p_new = p - eta_r * state['norm'] * (update / (avg_update_norm + group['rotational_eps']))
 
                     # Project back onto the sphere
-                    if group['zero_mean']:
-                        p_new = zero_mean(p_new, group['per_feature'])
-                    p_new = p_new * state['norm'] / tensor_norm(p_new, group['per_feature'])
+                    p_new = p_new * state['norm'] / tensor_norm(p_new, group['per_neuron'])
 
                     # Write update
                     p.copy_(p_new)
                 else:
                     # Standard non-rotational update
                     p.add_(-group['lr']*(unscaled_delta_grads[p]+unscaled_delta_lambdas[p]))
-
-
-def tensor_norm(tensor, per_feature=True):
-    if per_feature:
-        # This assumes weights are stored as K x other dims
-        # Which is the default for both Linear and Conv2d
-        norm = torch.linalg.vector_norm(tensor.reshape(tensor.shape[0], -1), dim=1)
-        return norm.reshape(-1, *([1]*(tensor.dim()-1)))
-    else:
-        return torch.linalg.vector_norm(tensor)
-
-
-def dot_product(a, b, per_feature=True):
-    if per_feature:
-        # This assumes weights are stored as K x other dims
-        # Which is the default for both Linear and Conv2d
-        return (a.flatten(1)*b.flatten(1)).sum(dim=1).reshape(a.shape[0], *([1]*(a.dim()-1)))
-    else:
-        return torch.sum(a*b)
-
-
-def zero_mean(tensor, per_feature=True):
-    if per_feature:
-        # This assumes weights are stored as K x other dims
-        # Which is the default for both Linear and Conv2d
-        flat_tensor = tensor.reshape(tensor.shape[0], -1)
-        return (flat_tensor - flat_tensor.mean(dim=1, keepdim=True)).view_as(tensor)
-    else:
-        return tensor - tensor.mean()
 
 
 ################################################################################
@@ -262,7 +237,7 @@ def adamw_get_update(state_lists, group):
         device_exp_avgs,
         device_exp_avg_sqs,
         device_state_steps,
-    )) in grouped_tensors.values():
+    ), _) in grouped_tensors.values():
 
         # update steps
         torch._foreach_add_(device_state_steps, 1)
@@ -384,8 +359,8 @@ def adam_get_update(state_lists, group):
         device_l2_exp_avgs,
         device_total_exp_avg_sqs,
         device_state_steps,
-    )) in grouped_tensors.values():
-
+    # )) in grouped_tensors.values():
+    ), _) in grouped_tensors.values():
         # update steps
         torch._foreach_add_(device_state_steps, 1)
 
@@ -495,7 +470,8 @@ def sgdm_get_update(state_lists, group):
         device_grad_exp_avgs,
         device_l2_exp_avgs,
         device_state_steps,
-    )) in grouped_tensors.values():
+    # )) in grouped_tensors.values():
+    ), _) in grouped_tensors.values():
         # update steps (used in the rotational wrapper)
         torch._foreach_add_(device_state_steps, 1)
 
@@ -523,7 +499,105 @@ def sgdm_etar_func(group):
     return (2*lr*wd/(1+alpha))**0.5
 
 
-# /AdamW functions
+#/SGDM functions
+################################################################################
+# Lion functions, based on PyTorch 2.0 source code
+
+def lion_init_state_get_lists(optimizer_state, group):
+    state_lists = dict(
+        params_with_grad=(params_with_grad := []),
+        grads=(grads := []),
+        exp_avgs=(exp_avgs := []),
+        state_steps=(state_steps := []),
+    )
+
+    for p in group["params"]:
+        if p.grad is None:
+            continue
+        params_with_grad.append(p)
+        if p.grad.is_sparse:
+            raise RuntimeError("AdamW does not support sparse gradients")
+        grads.append(p.grad)
+
+        state = optimizer_state[p]
+
+        # State initialization
+        if len(state) == 0:
+            state["step"] = torch.tensor(0.0)
+
+            # Exponential moving average of gradient values
+            state["exp_avg"] = torch.zeros_like(
+                p, memory_format=torch.preserve_format
+            )
+
+        exp_avgs.append(state["exp_avg"])
+        state_steps.append(state["step"])
+
+    return state_lists
+
+
+def lion_get_update(state_lists, group):
+    params = state_lists['params_with_grad']
+    grads = state_lists['grads']
+    exp_avgs = state_lists['exp_avgs']
+    state_steps = state_lists['state_steps']
+
+    beta1, beta2 = group['betas']
+    weight_decay = group['weight_decay']
+    eps = group['eps']
+
+    unscaled_delta_grads = dict()
+    unscaled_delta_lambdas = dict()
+
+    if len(params) == 0:
+        return dict(), dict()
+
+    grouped_tensors = _group_tensors_by_device_and_dtype([
+        params, grads, exp_avgs, state_steps])
+    for ((
+        device_params,
+        device_grads,
+        device_exp_avgs,
+        device_state_steps,
+    ), _) in grouped_tensors.values():
+        # update steps (used in the rotational wrapper)
+        torch._foreach_add_(device_state_steps, 1)
+
+        if len(device_params) == 0:
+            return
+
+        device_grads = [torch.view_as_real(x) if torch.is_complex(x) else x for x in device_grads]
+        device_exp_avgs = [torch.view_as_real(x) if torch.is_complex(x) else x for x in device_exp_avgs]
+        device_params = [torch.view_as_real(x) if torch.is_complex(x) else x for x in device_params]
+
+        # Weight update
+        updates = torch._foreach_mul(device_exp_avgs, beta1)
+        torch._foreach_add_(updates, device_grads, alpha=1 - beta1)
+
+        unscaled_updates = [u.sign() for u in updates]
+
+        # Decay the momentum running average coefficient
+        torch._foreach_mul_(device_exp_avgs, beta2)
+        torch._foreach_add_(device_exp_avgs, device_grads, alpha=1 - beta2)
+    
+        unscaled_delta_wd_list = torch._foreach_mul(device_params, weight_decay)
+        for param, udg, udl in zip(device_params, unscaled_updates, unscaled_delta_wd_list):
+            unscaled_delta_grads[param] = udg
+            unscaled_delta_lambdas[param] = udl
+
+    # Does not include -lr factor
+    return unscaled_delta_grads, unscaled_delta_lambdas
+
+def lion_etar_func(group):
+    # Computes the equilibrium eta_r
+    lr = group['lr']
+    wd = group['weight_decay']
+    beta1 = group['betas'][0]
+    beta2 = group['betas'][1]
+    return (math.pi/2.0)**0.5 * (2*lr*wd)**0.5 * ((1-beta1)**2 + beta1**2*(1-beta2)/(1+beta2))**0.5
+
+
+# /Lion functions
 ################################################################################
 # Helper functions from torch.optim.optimizer
 

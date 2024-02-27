@@ -50,18 +50,36 @@ class WSConv2d(nn.Conv2d):
             with torch.no_grad():
                 self.init_std.copy_(std.flatten())
             self.buffer_initialized = True
-        
+
         if not self.keep_init:
             fan_in = weight.size(1) * weight.size(2) * weight.size(3)
             scale_factor = 1.0 / (std * math.sqrt(fan_in))
         else:
             scale_factor = self.init_std.view(-1, 1, 1, 1) / std
-            
+
         if self.gain is not None:
             scale_factor = scale_factor * self.gain.view(-1, 1, 1, 1)
         weight = scale_factor * weight  # Could also apply to outputs, note different memory impact
         return F.conv2d(x, weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
+
+    def extra_repr(self):
+        s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
+             ', stride={stride}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        if self.padding_mode != 'zeros':
+            s += ', padding_mode={padding_mode}'
+        s += f', gain={self.gain is not None}, keep_init={self.keep_init}'
+        return s.format(**self.__dict__)
 
 
 class WSLinear(torch.nn.Linear):
@@ -99,7 +117,16 @@ class WSLinear(torch.nn.Linear):
             scale_factor = scale_factor * self.gain.view(-1, 1)
         weight = scale_factor * weight  # Could also apply to outputs, note different memory impact
         return torch.nn.functional.linear(x, weight, self.bias)
-    
+
+    def extra_repr(self) -> str:
+        return (f'in_features={self.in_features}, '
+            + f'out_features={self.out_features}, '
+            + f'bias={self.bias is not None}, '
+            + f'gain={self.gain is not None}, '
+            + f'keep_init={self.keep_init}'
+        )
+
+
 class SLinear(torch.nn.Linear):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
         super().__init__(in_features, out_features, bias=bias, device=device, dtype=dtype)

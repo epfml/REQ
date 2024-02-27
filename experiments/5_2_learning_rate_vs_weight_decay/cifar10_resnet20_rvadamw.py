@@ -8,8 +8,8 @@ shell_cmd = r"""PYTHONPATH=$PYTHONPATH:$base_dir torchrun --nproc_per_node 1 tra
     --data-dir $data_dir --dataset torch/CIFAR10 --dataset-download --num-classes 10 --pin-mem --input-size 3 32 32 --mean 0.4914 0.4822 0.4465 --std 0.2023 0.1994 0.2010 --crop-pct 1 --random-crop-pad 4 --color-jitter 0.0 --smoothing 0.0 \
     --model cifar_resnet --model-kwargs name="cifar_rn20"  \
     --train-split \"train[:0.9]-0\" --val-split \"train[0.9:]-0\"  \
-    -b ${b} --opt rvadamw --lr-base $lr --lr-base-size 128 --lr-base-scale linear --weight-decay $wd --sched cosine --sched-on-update --epochs 200 --warmup-lr 0 --min-lr 0 --warmup-epochs 5 --checkpoint-hist 1 \
-    --log-wandb --wandb-kwargs project=lr-wd-trade-off name="\"rvadamw_b_${b}_iter_${iter}_lr${lr}_wd${wd}_seed${seed}\"" --seed $seed \
+    -b ${b} --opt rvwrapper --opt-kwargs "inner_type=adamw" "etar_func=adamw" --lr-base $lr --lr-base-size 128 --lr-base-scale linear --weight-decay $wd --sched cosine --sched-on-update --epochs 200 --warmup-lr 0 --min-lr 0 --warmup-epochs 5 --checkpoint-hist 1 \
+    --log-wandb --wandb-kwargs project=lr-wd-trade-off-wrapper name="\"rvwrapper_adamw_b_${b}_iter_${iter}_lr${lr}_wd${wd}_seed${seed}\"" --seed $seed \
     --dynamics-logger-cfg '../../shared/utils/base_logger_cfg.yaml' 
 """
 
@@ -19,7 +19,7 @@ best_lr = 0.05
 # Configure runs
 def main():
     base_dir = os.getcwd()
-    lrs = [0.000001, 0.00001, 0.0001, 0.0003, 0.0009, 0.0027, 0.0083, 0.025, 0.05, 0.1, 0.3, 0.9, 2.7, 8.1 ]
+    lrs = [ 0.000001, 0.00001, 0.0001, 0.0003, 0.0009, 0.0027, 0.0083, 0.025, 0.05, 0.1, 0.3, 0.9, 2.7, 8.1 ]
     seeds = [ 0, 1, 2 ]
     idx = 0
     for seed in seeds:

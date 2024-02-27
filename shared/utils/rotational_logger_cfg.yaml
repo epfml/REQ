@@ -6,7 +6,7 @@ stats: [
     "layer_relative_update", "neuron_relative_update",
 ]
 
-disk_save_interval: 10  # Save f
+disk_save_interval: null  # Save f, null to disable
 disk_stats: all
 disk_max_channels: 16  # Max channels per layer saved
 disk_downsample: 10  # 
