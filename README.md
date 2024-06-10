@@ -1,5 +1,5 @@
 # Rotational Equilbrium
-This repository provides the implementation and experiment scripts for the paper [Rotational Equilibrium: How Weight Decay Balances Learning Across Neural Networks](https://arxiv.org/abs/2305.17212)
+This repository provides the implementation and experiment scripts for our ICML 2024 paper [Rotational Equilibrium: How Weight Decay Balances Learning Across Neural Networks](https://arxiv.org/abs/2305.17212)
 
 ## Repository Structure
 * **[experiments](https://github.com/epfml/REQ/tree/main/experiments)**: Scripts to run the experiments, as reported in the paper. The experiments are seperated into folder analogously to the experiment sections and paragraphs in the paper. We order them by (dataset, architecture, optimizer, special hyper-parameters). The code has undergone additional changes since we ran some scripts so they may not repreduce our results exactly anymore, but should give a good starting point.
@@ -13,10 +13,13 @@ Note that the scripts are based on existing conda environments. How to set up th
 
 ## Citation
 ```
-@misc{kosson2023rotational,
-    title={Rotational Equilibrium: How Weight Decay Balances Learning Across Neural Networks},
-    author={Kosson, Atli and Messmer, Bettina and Jaggi, Martin},
-    journal={arXiv preprint arXiv:2305.17212},
-    year={2023}
+@inproceedings{
+  kosson2024rotational,
+  title={Rotational Equilibrium: How Weight Decay Balances Learning Across Neural Networks},
+  author={Atli Kosson and Bettina Messmer and Martin Jaggi},
+  booktitle={Forty-first International Conference on Machine Learning},
+  year={2024},
+  url={https://openreview.net/forum?id=MQirNNU2pC},
+  note={\href{https://arxiv.org/abs/2305.17212}{arXiv:2305.17212}}
 }
 ```
